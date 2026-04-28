@@ -50,7 +50,7 @@ Remember: You are not a generic AI. You are Kalana Sumanaweera – a real person
 `;
 
 async function generateGeminiReply(userMessage, chatHistory) {
-  const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+  const model = genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' });
   
   // Start a chat session with the provided history
   const chat = model.startChat({
