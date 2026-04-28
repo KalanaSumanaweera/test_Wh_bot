@@ -10,10 +10,10 @@ const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 const ACCESS_TOKEN = process.env.ACCESS_TOKEN;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'my_verify_token';
 
-// Simple in-memory conversation history (for demo)
-// For production, use Supabase or similar
-const conversations = new Map(); // phone -> array of {role, content}
+// In-memory conversation store (for demo; replace with database for production)
+const conversations = new Map(); // key: userPhone, value: array of {role, content}
 
+// Webhook verification (GET)
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
@@ -27,6 +27,7 @@ app.get('/webhook', (req, res) => {
   }
 });
 
+// Receive messages (POST)
 app.post('/webhook', async (req, res) => {
   const body = req.body;
 
@@ -43,7 +44,7 @@ app.post('/webhook', async (req, res) => {
 
         console.log(`[${from}] says: ${userText}`);
 
-        // Get or create conversation history for this user
+        // Initialize conversation history for this user
         if (!conversations.has(from)) {
           conversations.set(from, [
             { role: 'system', content: SYSTEM_PROMPT }
@@ -51,43 +52,24 @@ app.post('/webhook', async (req, res) => {
         }
         let history = conversations.get(from);
         
-        // Keep last 10 exchanges to avoid token limits
+        // Keep only last 10 exchanges to avoid token limits
         const recentHistory = history.slice(-10);
         
         try {
-          // Get AI reply
+          // Generate AI reply
           const aiReply = await generateGeminiReply(userText, recentHistory);
           
-          // Check if the AI reply contains an order confirmation JSON
-          let finalReply = aiReply;
-          let orderData = null;
-          
-          const orderMatch = aiReply.match(/\{"order_confirmed"\s*:\s*true.*?\}/);
-          if (orderMatch) {
-            try {
-              orderData = JSON.parse(orderMatch[0]);
-              finalReply = aiReply.replace(orderMatch[0], '').trim();
-              // If the AI confirms order, we can save it to database later
-              console.log('Order confirmed:', orderData);
-            } catch(e) { /* ignore */ }
-          }
-          
-          // Save AI response to history
+          // Save to conversation history
           history.push({ role: 'user', content: userText });
           history.push({ role: 'assistant', content: aiReply });
           conversations.set(from, history);
           
-          // Send reply to user
-          await sendWhatsAppMessage(from, finalReply || aiReply, phoneNumberId);
-          
-          // If order confirmed, optionally notify owner
-          if (orderData) {
-            await notifyOwner(from, orderData);
-          }
+          // Send reply
+          await sendWhatsAppMessage(from, aiReply, phoneNumberId);
           
         } catch (error) {
           console.error('Gemini error:', error);
-          await sendWhatsAppMessage(from, 'Sorry, I am having trouble. Please try again later.', phoneNumberId);
+          await sendWhatsAppMessage(from, 'Sorry, I am having trouble responding. Please try again later.', phoneNumberId);
         }
       }
     }
@@ -97,13 +79,14 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
+// Function to send message via WhatsApp API
 async function sendWhatsAppMessage(to, message, phoneNumberId) {
   const url = `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`;
   const data = {
     messaging_product: 'whatsapp',
     to: to,
     type: 'text',
-    text: { body: message.substring(0, 4096) } // WhatsApp limit
+    text: { body: message.substring(0, 4096) } // WhatsApp character limit
   };
   const headers = {
     Authorization: `Bearer ${ACCESS_TOKEN}`,
@@ -116,19 +99,6 @@ async function sendWhatsAppMessage(to, message, phoneNumberId) {
   } catch (error) {
     console.error('Error sending reply:', error.response?.data || error.message);
   }
-}
-
-async function notifyOwner(customerNumber, orderData) {
-  const ownerNumber = process.env.OWNER_WHATSAPP_NUMBER;
-  if (!ownerNumber) return;
-  
-  let itemsText = '';
-  orderData.items.forEach(item => {
-    itemsText += `${item.quantity}x ${item.name} - $${(item.price * item.quantity).toFixed(2)}\n`;
-  });
-  const message = `📞 NEW ORDER from ${customerNumber}\n\n${itemsText}\nTotal: $${orderData.items.reduce((sum, i) => sum + (i.price * i.quantity), 0).toFixed(2)}\n\nPlease confirm preparation.`;
-  
-  await sendWhatsAppMessage(ownerNumber, message, process.env.WHATSAPP_PHONE_NUMBER_ID);
 }
 
 const PORT = process.env.PORT || 3000;
